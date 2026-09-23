@@ -125,6 +125,67 @@ export function parseSequenceList(text: string): string[] {
     .filter((l) => l.length > 0);
 }
 
+export interface CSVParseResult {
+  classes: { name: string; sequences: string[] }[];
+  errors: string[];
+}
+
+/**
+ * Parses a CSV with a header row containing a "sequence" column and a "label" (or "class")
+ * column — the same shape as the UCI promoters.csv example. Any number of distinct label
+ * values becomes its own class (not just binary), preserving first-seen order.
+ */
+export function parseClassesFromCSV(text: string): CSVParseResult {
+  const errors: string[] = [];
+  const lines = text
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0);
+
+  if (lines.length < 2) {
+    return { classes: [], errors: ["File needs a header row plus at least one data row."] };
+  }
+
+  const header = lines[0].split(",").map((h) => h.trim().toLowerCase());
+  const seqIdx = header.findIndex((h) => h.includes("seq"));
+  const labelIdx = header.findIndex((h) => h.includes("label") || h.includes("class"));
+
+  if (seqIdx === -1 || labelIdx === -1) {
+    return {
+      classes: [],
+      errors: ['Header must include a "sequence" column and a "label" (or "class") column.'],
+    };
+  }
+
+  const order: string[] = [];
+  const byLabel = new Map<string, string[]>();
+
+  for (let i = 1; i < lines.length; i++) {
+    const parts = lines[i].split(",");
+    if (parts.length <= Math.max(seqIdx, labelIdx)) continue;
+
+    const seq = cleanSequence(parts[seqIdx]);
+    const label = parts[labelIdx].trim();
+    if (seq.length === 0 || label.length === 0) {
+      errors.push(`Row ${i + 1}: missing sequence or label, skipped.`);
+      continue;
+    }
+
+    if (!byLabel.has(label)) {
+      byLabel.set(label, []);
+      order.push(label);
+    }
+    byLabel.get(label)!.push(seq);
+  }
+
+  if (order.length < 2) {
+    errors.push("Found fewer than 2 distinct labels — need at least 2 classes to train.");
+  }
+
+  const classes = order.map((label) => ({ name: label, sequences: byLabel.get(label)! }));
+  return { classes, errors };
+}
+
 // Deterministic color per alphabet symbol so any alphabet (not just A/C/G/T) gets
 // consistent, distinguishable colors in the viewer.
 const PALETTE = [

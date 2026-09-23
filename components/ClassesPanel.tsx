@@ -1,7 +1,7 @@
 "use client";
 
 import { useRef, useState } from "react";
-import { parseSequenceList } from "@/lib/sequence";
+import { parseSequenceList, parseClassesFromCSV } from "@/lib/sequence";
 
 export interface SeqClass {
   id: string;
@@ -124,6 +124,9 @@ export default function ClassesPanel({
   classes: SeqClass[];
   onChange: (classes: SeqClass[]) => void;
 }) {
+  const [csvStatus, setCsvStatus] = useState<{ ok: boolean; message: string } | null>(null);
+  const csvFileRef = useRef<HTMLInputElement>(null);
+
   function updateClass(id: string, next: SeqClass) {
     onChange(classes.map((c) => (c.id === id ? next : c)));
   }
@@ -136,8 +139,57 @@ export default function ClassesPanel({
     onChange([...classes, newClass(classes.length + 1)]);
   }
 
+  function handleCsvFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const { classes: parsed, errors } = parseClassesFromCSV(String(reader.result));
+      if (parsed.length < 2) {
+        setCsvStatus({ ok: false, message: errors[0] || "Couldn't parse this CSV." });
+        return;
+      }
+      onChange(
+        parsed.map((c) => ({ id: crypto.randomUUID(), name: c.name, sequences: c.sequences }))
+      );
+      const total = parsed.reduce((s, c) => s + c.sequences.length, 0);
+      setCsvStatus({
+        ok: true,
+        message: `Loaded ${total} sequences across ${parsed.length} classes (${parsed
+          .map((c) => c.name)
+          .join(", ")}). This replaced your current classes.`,
+      });
+    };
+    reader.readAsText(file);
+    e.target.value = "";
+  }
+
   return (
     <div className="space-y-3">
+      <div className="flex items-center gap-2">
+        <button
+          onClick={() => csvFileRef.current?.click()}
+          className="text-xs px-3 py-1.5 rounded-md bg-lab-panel2 border border-lab-border hover:border-accent transition-colors"
+        >
+          Upload CSV
+        </button>
+        <span className="text-[11px] text-lab-dim">
+          columns: sequence, label — builds classes from the distinct label values
+        </span>
+        <input
+          ref={csvFileRef}
+          type="file"
+          accept=".csv,.txt"
+          onChange={handleCsvFile}
+          className="hidden"
+        />
+      </div>
+      {csvStatus && (
+        <p className={`text-[11px] ${csvStatus.ok ? "text-lab-dim" : "text-base-T"}`}>
+          {csvStatus.message}
+        </p>
+      )}
+
       {classes.map((cls) => (
         <ClassCard
           key={cls.id}
