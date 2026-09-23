@@ -1,40 +1,39 @@
 "use client";
 
-import { BASES, oneHotEncode } from "@/lib/dna";
+import { oneHotEncode, colorForSymbol } from "@/lib/sequence";
 
-const BASE_BG: Record<string, string> = {
-  A: "bg-base-a",
-  C: "bg-base-c",
-  G: "bg-base-g",
-  T: "bg-base-t",
-};
-
-export default function OneHotViewer({ sequence }: { sequence: string }) {
-  const matrix = oneHotEncode(sequence, sequence.length);
+export default function OneHotViewer({
+  sequence,
+  alphabet,
+}: {
+  sequence: string;
+  alphabet: string[];
+}) {
+  const matrix = oneHotEncode(sequence, alphabet, sequence.length);
+  const cellSize = alphabet.length > 12 ? "w-4 h-4" : "w-5 h-5";
+  const colWidth = alphabet.length > 12 ? "w-4" : "w-5";
 
   return (
     <div className="overflow-x-auto">
       <div className="inline-block">
         <div className="flex mb-1">
-          <div className="w-6" />
-          {[...sequence].map((base, i) => (
-            <div
-              key={i}
-              className="w-5 text-[10px] text-center text-lab-dim font-mono"
-            >
-              {base}
+          <div className="w-8" />
+          {[...sequence].map((symbol, i) => (
+            <div key={i} className={`${colWidth} text-[10px] text-center text-lab-dim font-mono`}>
+              {symbol}
             </div>
           ))}
         </div>
-        {BASES.map((base, rowIdx) => (
-          <div key={base} className="flex items-center">
-            <div className="w-6 text-xs font-mono text-lab-dim">{base}</div>
+        {alphabet.map((symbol, rowIdx) => (
+          <div key={symbol} className="flex items-center">
+            <div className="w-8 text-xs font-mono text-lab-dim truncate">{symbol}</div>
             {matrix.map((row, colIdx) => (
               <div
                 key={colIdx}
-                className={`w-5 h-5 border border-lab-bg ${
-                  row[rowIdx] === 1 ? BASE_BG[base] : "bg-lab-panel2"
-                }`}
+                className={`${cellSize} border border-lab-bg`}
+                style={{
+                  backgroundColor: row[rowIdx] === 1 ? colorForSymbol(symbol, alphabet) : "#171F25",
+                }}
                 title={`position ${colIdx + 1}: ${row[rowIdx]}`}
               />
             ))}
@@ -42,8 +41,9 @@ export default function OneHotViewer({ sequence }: { sequence: string }) {
         ))}
       </div>
       <p className="text-xs text-lab-dim mt-2">
-        Each column is one base position; each row is a channel (A, C, G, T). Exactly
-        one cell per column is lit — that&apos;s the one-hot vector for that base.
+        Each column is one position in the sequence; each row is one symbol in the alphabet (
+        {alphabet.join(", ")}). Exactly one cell per column is lit — that&apos;s the one-hot
+        vector for that position.
       </p>
     </div>
   );

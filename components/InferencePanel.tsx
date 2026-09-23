@@ -2,44 +2,52 @@
 
 import { useState } from "react";
 import * as tf from "@tensorflow/tfjs";
-import { oneHotEncode, validateSequence } from "@/lib/dna";
+import { oneHotEncode, validateSequence, colorForSymbol } from "@/lib/sequence";
 
 export default function InferencePanel({
   model,
   maxLen,
+  alphabet,
+  classNames,
 }: {
   model: tf.LayersModel | null;
   maxLen: number;
+  alphabet: string[];
+  classNames: string[];
 }) {
   const [input, setInput] = useState("");
-  const [prob, setProb] = useState<number | null>(null);
+  const [probs, setProbs] = useState<number[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   function runInference() {
     setError(null);
-    setProb(null);
+    setProbs(null);
     if (!model) {
       setError("Train a model first.");
       return;
     }
-    const { valid, cleaned, errors } = validateSequence(input);
+    const { valid, cleaned, errors } = validateSequence(input, alphabet);
     if (!valid) {
       setError(errors[0]);
       return;
     }
 
-    const matrix = oneHotEncode(cleaned, maxLen);
+    const matrix = oneHotEncode(cleaned, alphabet, maxLen);
     const flat = matrix.flat();
-    const x = tf.tensor3d(flat, [1, maxLen, 4]);
+    const x = tf.tensor3d(flat, [1, maxLen, alphabet.length]);
     const pred = model.predict(x) as tf.Tensor;
     pred.data().then((data) => {
-      setProb(data[0]);
+      setProbs(Array.from(data));
       x.dispose();
       pred.dispose();
     });
   }
 
-  const promoterPct = prob !== null ? Math.round(prob * 100) : null;
+  // Deterministic-ish colors for class bars, distinct from base symbol colors.
+  const classColor = (i: number) =>
+    ["#2DD4BF", "#FB7185", "#FBBF24", "#38BDF8", "#A78BFA", "#4ADE80", "#F472B6", "#FB923C"][
+      i % 8
+    ];
 
   return (
     <div className="space-y-3">
@@ -48,7 +56,7 @@ export default function InferencePanel({
         onChange={(e) => setInput(e.target.value)}
         placeholder={
           model
-            ? `Paste a sequence (will be padded/truncated to ${maxLen} bases)…`
+            ? `Paste a sequence (will be padded/truncated to ${maxLen} symbols)…`
             : "Train a model on the left first…"
         }
         className="w-full h-20 bg-lab-bg border border-lab-border rounded-md p-2 text-sm font-mono resize-none focus:outline-none focus:border-accent"
@@ -64,29 +72,25 @@ export default function InferencePanel({
 
       {error && <p className="text-xs text-base-T">{error}</p>}
 
-      {promoterPct !== null && (
+      {probs && (
         <div className="space-y-2">
-          <div className="space-y-1">
-            <div className="flex justify-between text-xs">
-              <span className="base-a">Promoter</span>
-              <span className="font-mono">{promoterPct}%</span>
-            </div>
-            <div className="h-2 bg-lab-panel2 rounded-full overflow-hidden">
-              <div className="h-full bg-base-A transition-all duration-300" style={{ width: `${promoterPct}%` }} />
-            </div>
-          </div>
-          <div className="space-y-1">
-            <div className="flex justify-between text-xs">
-              <span className="base-t">Non-promoter</span>
-              <span className="font-mono">{100 - promoterPct}%</span>
-            </div>
-            <div className="h-2 bg-lab-panel2 rounded-full overflow-hidden">
-              <div
-                className="h-full bg-base-T transition-all duration-300"
-                style={{ width: `${100 - promoterPct}%` }}
-              />
-            </div>
-          </div>
+          {classNames.map((name, i) => {
+            const pct = Math.round(probs[i] * 100);
+            return (
+              <div key={name} className="space-y-1">
+                <div className="flex justify-between text-xs">
+                  <span style={{ color: classColor(i) }}>{name}</span>
+                  <span className="font-mono">{pct}%</span>
+                </div>
+                <div className="h-2 bg-lab-panel2 rounded-full overflow-hidden">
+                  <div
+                    className="h-full transition-all duration-300"
+                    style={{ width: `${pct}%`, backgroundColor: classColor(i) }}
+                  />
+                </div>
+              </div>
+            );
+          })}
         </div>
       )}
     </div>

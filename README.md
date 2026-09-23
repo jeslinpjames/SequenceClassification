@@ -1,8 +1,18 @@
-# DNA Sequence Classifier
+# Sequence Classifier
 
-Paste a DNA sequence, see it one-hot encoded, train a small RNN / LSTM / GRU / BiLSTM
-on your own labeled dataset, and get instant predictions — all deployable as a single
-Vercel project.
+A Teachable-Machine-style tool for biological sequences: add example sequences per class,
+train a small RNN / LSTM / GRU / BiLSTM, and get instant predictions — all deployable as a
+single Vercel project. Works with DNA, RNA, protein, or any custom single-character alphabet,
+not just DNA.
+
+## Data format
+
+There's no CSV upload anymore — data entry mirrors Teachable Machine: each class is its own
+card, and you paste or upload example sequences directly into it (one per line, or FASTA with
+`>` headers). Add as many classes as you like (2 or more). Pick the sequence type above the
+classes — DNA, RNA, Protein, Auto-detect (infers the alphabet from whatever characters appear
+in your examples), or Custom (type your own alphabet, e.g. for non-biological categorical
+sequences).
 
 ## How it's built (and why)
 
@@ -27,25 +37,27 @@ Vercel project.
 
 ## Getting a real dataset
 
-The app expects a CSV with a `sequence` column and a `label` column (label can be `1`/`0`,
-`+`/`-`, or `promoter`/`non-promoter`). A good, small, well-known dataset to start with:
+A good, small, well-known dataset to start with: **UCI "Molecular Biology (Promoter Gene
+Sequences)"** — 106 E. coli DNA sequences (57 bases each), labeled promoter vs. non-promoter.
+Small enough to train in seconds.
 
-**UCI "Molecular Biology (Promoter Gene Sequences)"** — 106 E. coli DNA sequences (57 bases
-each), labeled promoter vs. non-promoter. Small enough to train in seconds, which matches
-"small model is enough."
+Run `scripts/prepare_dataset.py` (see its header comment for the fetch snippet) to get a
+`sequence,label` CSV, then split it into the two files the app wants pasted into its two
+classes:
 
-To fetch and convert it:
-
-```bash
-pip install ucimlrepo pandas
-python scripts/prepare_dataset.py
+```python
+import pandas as pd
+df = pd.read_csv("promoters.csv")
+df[df.label == 1].sequence.to_csv("promoter_examples.txt", index=False, header=False)
+df[df.label == 0].sequence.to_csv("non_promoter_examples.txt", index=False, header=False)
 ```
 
-This writes `data/promoters.csv`, ready to upload in the app's "Training dataset" panel.
+Then open each `.txt` and paste its contents into the matching class's textarea (or use the
+class card's "Upload" button to load the file directly — one sequence per line works as-is).
 
-If you outgrow 106 examples, larger public promoter datasets exist (e.g. the Genomic
-Benchmarks project's human non-TATA promoter set, tens of thousands of sequences) — the app's
-CSV format works the same way for those; just export sequence/label pairs to a CSV.
+This same paste-or-upload flow works for any sequence type: protein families, RNA classes,
+or a fully custom alphabet — just set the sequence type accordingly and put each category's
+examples in its own class.
 
 ## Running locally
 

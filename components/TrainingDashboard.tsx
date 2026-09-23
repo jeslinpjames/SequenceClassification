@@ -26,13 +26,6 @@ export interface Metrics {
   f1: number;
 }
 
-export interface ConfusionMatrix {
-  tp: number;
-  tn: number;
-  fp: number;
-  fn: number;
-}
-
 function MetricCard({ label, value }: { label: string; value: string }) {
   return (
     <div className="bg-lab-panel2 border border-lab-border rounded-md px-3 py-2">
@@ -42,20 +35,33 @@ function MetricCard({ label, value }: { label: string; value: string }) {
   );
 }
 
+function confusionCellColor(value: number, isDiagonal: boolean, max: number): string {
+  if (value === 0) return "transparent";
+  const intensity = Math.min(1, value / (max || 1));
+  return isDiagonal
+    ? `rgba(74, 222, 128, ${0.15 + intensity * 0.5})`
+    : `rgba(251, 113, 133, ${0.1 + intensity * 0.4})`;
+}
+
 export default function TrainingDashboard({
   history,
   totalEpochs,
   metrics,
   confusionMatrix,
+  classNames,
   isTraining,
 }: {
   history: EpochLog[];
   totalEpochs: number;
   metrics: Metrics | null;
-  confusionMatrix: ConfusionMatrix | null;
+  confusionMatrix: number[][];
+  classNames: string[];
   isTraining: boolean;
 }) {
   const progress = totalEpochs > 0 ? history.length / totalEpochs : 0;
+  const maxCell = confusionMatrix.length
+    ? Math.max(...confusionMatrix.flat())
+    : 0;
 
   return (
     <div className="space-y-4">
@@ -123,30 +129,39 @@ export default function TrainingDashboard({
         </div>
       )}
 
-      {confusionMatrix && (
+      {confusionMatrix.length > 0 && (
         <div className="space-y-1">
-          <div className="text-xs text-lab-dim">Confusion matrix (validation set)</div>
-          <table className="text-xs font-mono border border-lab-border rounded-md overflow-hidden w-full">
-            <thead>
-              <tr className="bg-lab-panel2 text-lab-dim">
-                <th className="p-1"></th>
-                <th className="p-1">Pred +</th>
-                <th className="p-1">Pred -</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr>
-                <td className="p-1 text-lab-dim bg-lab-panel2">Actual +</td>
-                <td className="p-1 text-center bg-base-A/20">{confusionMatrix.tp}</td>
-                <td className="p-1 text-center bg-base-T/10">{confusionMatrix.fn}</td>
-              </tr>
-              <tr>
-                <td className="p-1 text-lab-dim bg-lab-panel2">Actual -</td>
-                <td className="p-1 text-center bg-base-T/10">{confusionMatrix.fp}</td>
-                <td className="p-1 text-center bg-base-A/20">{confusionMatrix.tn}</td>
-              </tr>
-            </tbody>
-          </table>
+          <div className="text-xs text-lab-dim">Confusion matrix (validation set) — rows = actual, columns = predicted</div>
+          <div className="overflow-x-auto">
+            <table className="text-xs font-mono border border-lab-border rounded-md">
+              <thead>
+                <tr>
+                  <th className="p-1 bg-lab-panel2"></th>
+                  {classNames.map((name) => (
+                    <th key={name} className="p-1 bg-lab-panel2 text-lab-dim font-normal max-w-[80px] truncate">
+                      {name}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {confusionMatrix.map((row, r) => (
+                  <tr key={r}>
+                    <td className="p-1 text-lab-dim bg-lab-panel2 max-w-[80px] truncate">{classNames[r]}</td>
+                    {row.map((val, c) => (
+                      <td
+                        key={c}
+                        className="p-1 text-center min-w-[36px]"
+                        style={{ backgroundColor: confusionCellColor(val, r === c, maxCell) }}
+                      >
+                        {val}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
     </div>

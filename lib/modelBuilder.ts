@@ -4,13 +4,13 @@ export type ModelType = "rnn" | "lstm" | "gru" | "bilstm";
 
 export interface HyperParams {
   modelType: ModelType;
-  hiddenUnits: number; // units per recurrent layer
-  numLayers: number; // 1-3
-  dropout: number; // 0-0.6
+  hiddenUnits: number;
+  numLayers: number;
+  dropout: number;
   learningRate: number;
   batchSize: number;
   epochs: number;
-  valSplit: number; // 0.1 - 0.4
+  valSplit: number;
 }
 
 export const DEFAULT_HYPERPARAMS: HyperParams = {
@@ -49,16 +49,24 @@ function makeRecurrentLayer(
 
 /**
  * Builds a small sequential recurrent classifier:
- * Input [seqLen, 4] -> (recurrent layer(s) + dropout) -> Dense(1, sigmoid)
+ * Input [seqLen, vocabSize] -> (recurrent layer(s) + dropout) -> Dense(numClasses, softmax)
+ *
+ * Uses softmax + sparseCategoricalCrossentropy uniformly for 2-or-more classes, so binary
+ * and multi-class (Teachable-Machine-style "any number of classes") share one code path.
  */
-export function buildModel(seqLen: number, hp: HyperParams): tf.LayersModel {
+export function buildModel(
+  seqLen: number,
+  vocabSize: number,
+  numClasses: number,
+  hp: HyperParams
+): tf.LayersModel {
   const model = tf.sequential();
 
   for (let layerIdx = 0; layerIdx < hp.numLayers; layerIdx++) {
     const isLast = layerIdx === hp.numLayers - 1;
     const layer = makeRecurrentLayer(hp.modelType, hp.hiddenUnits, !isLast);
     if (layerIdx === 0) {
-      model.add(tf.layers.inputLayer({ inputShape: [seqLen, 4] }));
+      model.add(tf.layers.inputLayer({ inputShape: [seqLen, vocabSize] }));
     }
     model.add(layer);
     if (hp.dropout > 0) {
@@ -67,17 +75,13 @@ export function buildModel(seqLen: number, hp: HyperParams): tf.LayersModel {
   }
 
   model.add(tf.layers.dense({ units: 8, activation: "relu" }));
-  model.add(tf.layers.dense({ units: 1, activation: "sigmoid" }));
+  model.add(tf.layers.dense({ units: numClasses, activation: "softmax" }));
 
   model.compile({
     optimizer: tf.train.adam(hp.learningRate),
-    loss: "binaryCrossentropy",
+    loss: "sparseCategoricalCrossentropy",
     metrics: ["accuracy"],
   });
 
   return model;
-}
-
-export function countParams(model: tf.LayersModel): number {
-  return model.countParams();
 }
