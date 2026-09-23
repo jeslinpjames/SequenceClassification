@@ -79,4 +79,3 @@ components/                UI panels (sequence viewer, one-hot grid, dataset upl
                             hyperparameter controls, training charts, inference)
 scripts/prepare_dataset.py fetches + converts the UCI promoter dataset
 ```
-"# SequenceClassification" 

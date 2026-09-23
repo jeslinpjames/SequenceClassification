@@ -54,7 +54,22 @@ export default function Home() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ rows: dataset, hyperparams: hp }),
       });
-      const data = await res.json();
+
+      let data: any;
+      try {
+        data = await res.json();
+      } catch {
+        // Response wasn't JSON at all — usually a platform-level error page
+        // (e.g. a serverless function timeout) rather than our API responding.
+        setTrainError(
+          res.status === 504 || !res.ok
+            ? "The server didn't respond in time — this usually means training took too long for the current hosting limits. Try fewer epochs, fewer/smaller layers, or a smaller dataset."
+            : "Unexpected response from the server."
+        );
+        setIsTraining(false);
+        return;
+      }
+
       if (!res.ok) {
         setTrainError(data.error || "Training failed.");
         setIsTraining(false);
