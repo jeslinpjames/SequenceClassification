@@ -23,7 +23,7 @@ export const DEFAULT_HYPERPARAMS: HyperParams = {
   dropout: 0.2,
   learningRate: 0.01,
   batchSize: 8,
-  epochs: 30,
+  epochs: 15,
   valSplit: 0.2,
   seed: 42,
   crossValidate: false,
