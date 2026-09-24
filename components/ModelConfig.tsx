@@ -71,7 +71,7 @@ export default function ModelConfig({
         />
       </Field>
 
-      <Field label="Recurrent layers" value={hp.numLayers}>
+      <Field label="Layers" value={hp.numLayers}>
         <input
           type="range"
           min={1}
