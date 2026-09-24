@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import * as tf from "@tensorflow/tfjs";
 import { oneHotEncode, flattenBatch, resolveAlphabet, validateSequence, SequenceTypeConfig } from "@/lib/sequence";
 import { buildModel, HyperParams } from "@/lib/modelBuilder";
+import { mulberry32, seededShuffle, stratifiedFolds } from "@/lib/seededRandom";
 
 export const runtime = "nodejs";
 export const maxDuration = 60; // seconds — raise on Vercel Pro if you need longer runs
@@ -17,13 +18,54 @@ interface TrainRequestBody {
   hyperparams: HyperParams;
 }
 
-function shuffleIndices(n: number): number[] {
-  const idx = Array.from({ length: n }, (_, i) => i);
-  for (let i = idx.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [idx[i], idx[j]] = [idx[j], idx[i]];
+interface EpochLog {
+  epoch: number;
+  loss: number;
+  acc: number;
+  val_loss: number | null;
+  val_acc: number | null;
+}
+
+function computeConfusionAndMetrics(
+  predClasses: number[],
+  trueClasses: number[],
+  numClasses: number
+) {
+  const confusionMatrix: number[][] = Array.from({ length: numClasses }, () => new Array(numClasses).fill(0));
+  for (let i = 0; i < predClasses.length; i++) {
+    confusionMatrix[trueClasses[i]][predClasses[i]]++;
   }
-  return idx;
+  let correct = 0;
+  const perClass = { precision: 0, recall: 0, f1: 0 };
+  for (let c = 0; c < numClasses; c++) {
+    const tp = confusionMatrix[c][c];
+    const fp = confusionMatrix.reduce((s, row, r) => (r === c ? s : s + row[c]), 0);
+    const fn = confusionMatrix[c].reduce((s, v, cc) => (cc === c ? s : s + v), 0);
+    const precision = tp / (tp + fp || 1);
+    const recall = tp / (tp + fn || 1);
+    const f1 = (2 * precision * recall) / (precision + recall || 1);
+    perClass.precision += precision;
+    perClass.recall += recall;
+    perClass.f1 += f1;
+    correct += tp;
+  }
+  return {
+    confusionMatrix,
+    metrics: {
+      accuracy: correct / (predClasses.length || 1),
+      precision: perClass.precision / numClasses,
+      recall: perClass.recall / numClasses,
+      f1: perClass.f1 / numClasses,
+    },
+  };
+}
+
+function mean(xs: number[]): number {
+  return xs.reduce((a, b) => a + b, 0) / (xs.length || 1);
+}
+function std(xs: number[]): number {
+  const m = mean(xs);
+  return Math.sqrt(mean(xs.map((x) => (x - m) ** 2)));
 }
 
 export async function POST(req: NextRequest) {
@@ -34,7 +76,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Invalid JSON body." }, { status: 400 });
   }
 
-  const { classes, sequenceType, hyperparams } = body;
+  const { classes, sequenceType, hyperparams: hp } = body;
 
   if (!Array.isArray(classes) || classes.length < 2) {
     return NextResponse.json({ error: "Add at least 2 classes to train on." }, { status: 400 });
@@ -56,9 +98,16 @@ export async function POST(req: NextRequest) {
         { status: 400 }
       );
     }
+    if (hp.crossValidate && c.sequences.length < hp.folds) {
+      return NextResponse.json(
+        {
+          error: `With ${hp.folds}-fold cross-validation, every class needs at least ${hp.folds} examples ("${c.name}" has ${c.sequences.length}). Add more examples, or lower the fold count.`,
+        },
+        { status: 400 }
+      );
+    }
   }
 
-  // --- Resolve the alphabet (DNA / RNA / protein / auto-detected / custom) ---
   const alphabet = resolveAlphabet(sequenceType, allSequences);
   if (alphabet.length < 2) {
     return NextResponse.json(
@@ -67,14 +116,13 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // --- Validate + collect rows ---
   const rows: { sequence: string; label: number }[] = [];
-  const errors: string[] = [];
+  const parseErrors: string[] = [];
   classes.forEach((c, classIdx) => {
     for (const raw of c.sequences) {
       const { valid, cleaned, errors: seqErrors } = validateSequence(raw, alphabet);
       if (!valid) {
-        errors.push(`"${c.name}": ${seqErrors[0]}`);
+        parseErrors.push(`"${c.name}": ${seqErrors[0]}`);
         continue;
       }
       rows.push({ sequence: cleaned, label: classIdx });
@@ -83,7 +131,7 @@ export async function POST(req: NextRequest) {
 
   if (rows.length < 10) {
     return NextResponse.json(
-      { error: `Too many invalid sequences to train. First issue: ${errors[0] ?? "unknown"}` },
+      { error: `Too many invalid sequences to train. First issue: ${parseErrors[0] ?? "unknown"}` },
       { status: 400 }
     );
   }
@@ -98,71 +146,40 @@ export async function POST(req: NextRequest) {
 
   const vocabSize = alphabet.length;
   const numClasses = classes.length;
-
-  // --- Encode ---
+  const labels = rows.map((r) => r.label);
   const encoded = rows.map((r) => oneHotEncode(r.sequence, alphabet, maxLen));
   const flat = flattenBatch(encoded, vocabSize);
-  const labels = rows.map((r) => r.label);
-
-  // --- Shuffle + split ---
-  const order = shuffleIndices(rows.length);
-  const valCount = Math.max(numClasses, Math.round(rows.length * (hyperparams.valSplit ?? 0.2)));
-  const valIdx = new Set(order.slice(0, valCount));
-
-  const trainX: number[] = [];
-  const trainY: number[] = [];
-  const valX: number[] = [];
-  const valY: number[] = [];
-
   const stride = maxLen * vocabSize;
-  for (let i = 0; i < rows.length; i++) {
-    const start = i * stride;
-    const slice = Array.from(flat.slice(start, start + stride));
-    if (valIdx.has(i)) {
-      valX.push(...slice);
-      valY.push(labels[i]);
-    } else {
-      trainX.push(...slice);
-      trainY.push(labels[i]);
+
+  function tensorsFor(indices: number[]) {
+    const x: number[] = [];
+    const y: number[] = [];
+    for (const i of indices) {
+      const start = i * stride;
+      x.push(...Array.from(flat.slice(start, start + stride)));
+      y.push(labels[i]);
     }
+    return {
+      xs: tf.tensor3d(x, [indices.length, maxLen, vocabSize]),
+      ys: tf.tensor2d(y, [indices.length, 1]),
+      rawY: y,
+    };
   }
 
-  const nTrain = trainY.length;
-  const nVal = valY.length;
+  async function trainOneModel(trainIdx: number[], valIdx: number[] | null) {
+    const shuffledTrainIdx = seededShuffle(trainIdx, rng);
+    const { xs: xsTrain, ys: ysTrain } = tensorsFor(shuffledTrainIdx);
+    const val = valIdx && valIdx.length > 0 ? tensorsFor(valIdx) : null;
 
-  if (nTrain < numClasses * 2) {
-    return NextResponse.json(
-      { error: "Not enough training examples after the validation split. Add more data or lower the validation split." },
-      { status: 400 }
-    );
-  }
+    const model = buildModel(maxLen, vocabSize, numClasses, hp);
+    const history: EpochLog[] = [];
 
-  const xsTrain = tf.tensor3d(trainX, [nTrain, maxLen, vocabSize]);
-  const ysTrain = tf.tensor2d(trainY, [nTrain, 1]);
-  const xsVal = nVal > 0 ? tf.tensor3d(valX, [nVal, maxLen, vocabSize]) : null;
-  const ysVal = nVal > 0 ? tf.tensor2d(valY, [nVal, 1]) : null;
-
-  let model: tf.LayersModel;
-  try {
-    model = buildModel(maxLen, vocabSize, numClasses, hyperparams);
-  } catch (err) {
-    tf.dispose([xsTrain, ysTrain, xsVal, ysVal].filter(Boolean) as tf.Tensor[]);
-    return NextResponse.json({ error: `Couldn't build model: ${(err as Error).message}` }, { status: 500 });
-  }
-
-  const history: Array<{
-    epoch: number;
-    loss: number;
-    acc: number;
-    val_loss: number | null;
-    val_acc: number | null;
-  }> = [];
-
-  try {
     await model.fit(xsTrain, ysTrain, {
-      epochs: hyperparams.epochs,
-      batchSize: hyperparams.batchSize,
-      validationData: xsVal && ysVal ? [xsVal, ysVal] : undefined,
+      epochs: hp.epochs,
+      batchSize: hp.batchSize,
+      validationData: val ? [val.xs, val.ys] : undefined,
+      shuffle: false, // we pre-shuffle everything ourselves with a seeded RNG; tfjs's
+      // own internal shuffle uses unseeded randomness and would silently break reproducibility
       verbose: 0,
       callbacks: {
         onEpochEnd: async (epoch, logs) => {
@@ -176,68 +193,124 @@ export async function POST(req: NextRequest) {
         },
       },
     });
+
+    let evalResult: ReturnType<typeof computeConfusionAndMetrics> | null = null;
+    if (val) {
+      const preds = model.predict(val.xs) as tf.Tensor;
+      const predClasses = Array.from(await preds.argMax(-1).data());
+      evalResult = computeConfusionAndMetrics(predClasses, val.rawY, numClasses);
+      preds.dispose();
+      val.xs.dispose();
+      val.ys.dispose();
+    }
+
+    xsTrain.dispose();
+    ysTrain.dispose();
+
+    return { model, history, evalResult };
+  }
+
+  const rng = mulberry32(hp.seed);
+  let history: EpochLog[] = [];
+  let metrics = { accuracy: 0, precision: 0, recall: 0, f1: 0 };
+  let confusionMatrix: number[][] = [];
+  let cvFoldAccuracies: number[] | null = null;
+  let cvStd: number | null = null;
+  let finalModel: tf.LayersModel;
+
+  try {
+    if (hp.crossValidate) {
+      const folds = stratifiedFolds(labels, hp.folds, rng);
+      const foldMetrics: { accuracy: number; precision: number; recall: number; f1: number }[] = [];
+      let summedConfusion: number[][] | null = null;
+      const epochSums: { loss: number; acc: number }[] = [];
+
+      for (let f = 0; f < folds.length; f++) {
+        const valIdx = folds[f];
+        const trainIdx = folds.filter((_, i) => i !== f).flat();
+        const { model, history: foldHistory, evalResult } = await trainOneModel(trainIdx, valIdx);
+
+        if (evalResult) {
+          foldMetrics.push(evalResult.metrics);
+          if (!summedConfusion) {
+            summedConfusion = evalResult.confusionMatrix.map((row) => [...row]);
+          } else {
+            evalResult.confusionMatrix.forEach((row, r) => row.forEach((v, c) => (summedConfusion![r][c] += v)));
+          }
+        }
+        foldHistory.forEach((h, i) => {
+          if (!epochSums[i]) epochSums[i] = { loss: 0, acc: 0 };
+          epochSums[i].loss += h.loss;
+          epochSums[i].acc += h.acc;
+        });
+
+        model.dispose();
+      }
+
+      history = epochSums.map((sum, i) => ({
+        epoch: i + 1,
+        loss: sum.loss / folds.length,
+        acc: sum.acc / folds.length,
+        val_loss: null,
+        val_acc: null,
+      }));
+      cvFoldAccuracies = foldMetrics.map((m) => m.accuracy);
+      cvStd = std(cvFoldAccuracies);
+      metrics = {
+        accuracy: mean(foldMetrics.map((m) => m.accuracy)),
+        precision: mean(foldMetrics.map((m) => m.precision)),
+        recall: mean(foldMetrics.map((m) => m.recall)),
+        f1: mean(foldMetrics.map((m) => m.f1)),
+      };
+      confusionMatrix = summedConfusion ?? [];
+
+      // Train the model that actually gets shipped to the browser on ALL data,
+      // now that cross-validation has given us a reliable performance estimate.
+      const allIdx = Array.from({ length: rows.length }, (_, i) => i);
+      const { model } = await trainOneModel(allIdx, null);
+      finalModel = model;
+    } else {
+      // Single stratified, seeded split (still far more stable than a plain random one).
+      const perClassIdx = new Map<number, number[]>();
+      labels.forEach((label, idx) => {
+        if (!perClassIdx.has(label)) perClassIdx.set(label, []);
+        perClassIdx.get(label)!.push(idx);
+      });
+      const trainIdx: number[] = [];
+      const valIdx: number[] = [];
+      for (const indices of perClassIdx.values()) {
+        const shuffled = seededShuffle(indices, rng);
+        const nVal = Math.max(1, Math.round(shuffled.length * (hp.valSplit ?? 0.2)));
+        valIdx.push(...shuffled.slice(0, nVal));
+        trainIdx.push(...shuffled.slice(nVal));
+      }
+
+      const { model, history: h, evalResult } = await trainOneModel(trainIdx, valIdx);
+      history = h;
+      if (evalResult) {
+        metrics = evalResult.metrics;
+        confusionMatrix = evalResult.confusionMatrix;
+      }
+      finalModel = model;
+    }
   } catch (err) {
-    tf.dispose([xsTrain, ysTrain, xsVal, ysVal].filter(Boolean) as tf.Tensor[]);
-    model.dispose();
     return NextResponse.json({ error: `Training failed: ${(err as Error).message}` }, { status: 500 });
   }
 
-  // --- Evaluate on validation split: overall accuracy, macro precision/recall/f1, NxN confusion matrix ---
-  let confusionMatrix: number[][] = [];
-  let metrics = { accuracy: 0, precision: 0, recall: 0, f1: 0 };
-
-  if (xsVal && ysVal && nVal > 0) {
-    const preds = model.predict(xsVal) as tf.Tensor;
-    const predClasses = Array.from(await preds.argMax(-1).data());
-    const trueClasses = valY;
-
-    confusionMatrix = Array.from({ length: numClasses }, () => new Array(numClasses).fill(0));
-    for (let i = 0; i < predClasses.length; i++) {
-      confusionMatrix[trueClasses[i]][predClasses[i]]++;
-    }
-
-    let correct = 0;
-    const perClass = { precision: 0, recall: 0, f1: 0 };
-    for (let c = 0; c < numClasses; c++) {
-      const tp = confusionMatrix[c][c];
-      const fp = confusionMatrix.reduce((s, row, r) => (r === c ? s : s + row[c]), 0);
-      const fn = confusionMatrix[c].reduce((s, v, cc) => (cc === c ? s : s + v), 0);
-      const precision = tp / (tp + fp || 1);
-      const recall = tp / (tp + fn || 1);
-      const f1 = (2 * precision * recall) / (precision + recall || 1);
-      perClass.precision += precision;
-      perClass.recall += recall;
-      perClass.f1 += f1;
-      correct += tp;
-    }
-    metrics = {
-      accuracy: correct / (predClasses.length || 1),
-      precision: perClass.precision / numClasses,
-      recall: perClass.recall / numClasses,
-      f1: perClass.f1 / numClasses,
-    };
-    preds.dispose();
-  }
-
-  // --- Serialize the trained model to send back to the browser ---
   let modelTopology: unknown = null;
   let weightSpecs: unknown = null;
   let weightDataB64 = "";
 
-  await model.save(
+  await finalModel.save(
     tf.io.withSaveHandler(async (artifacts) => {
       modelTopology = artifacts.modelTopology;
       weightSpecs = artifacts.weightSpecs;
       const buf = Buffer.from(artifacts.weightData as ArrayBuffer);
       weightDataB64 = buf.toString("base64");
-      return {
-        modelArtifactsInfo: { dateSaved: new Date(), modelTopologyType: "JSON" },
-      };
+      return { modelArtifactsInfo: { dateSaved: new Date(), modelTopologyType: "JSON" } };
     })
   );
-
-  tf.dispose([xsTrain, ysTrain, xsVal, ysVal].filter(Boolean) as tf.Tensor[]);
-  model.dispose();
+  finalModel.dispose();
 
   return NextResponse.json({
     history,
@@ -245,8 +318,11 @@ export async function POST(req: NextRequest) {
     confusionMatrix,
     classNames,
     alphabet,
-    dataset: { total: rows.length, nTrain, nVal, maxLen, vocabSize, numClasses },
-    warnings: errors.slice(0, 5),
+    crossValidated: hp.crossValidate,
+    cvFoldAccuracies,
+    cvStd,
+    dataset: { total: rows.length, maxLen, vocabSize, numClasses },
+    warnings: parseErrors.slice(0, 5),
     model: { modelTopology, weightSpecs, weightDataB64 },
   });
 }

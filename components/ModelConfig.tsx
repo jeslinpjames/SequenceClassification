@@ -140,9 +140,63 @@ export default function ModelConfig({
           step={0.05}
           value={hp.valSplit}
           onChange={(e) => set("valSplit", Number(e.target.value))}
-          className="w-full accent-accent"
+          className="w-full accent-accent disabled:opacity-40"
+          disabled={hp.crossValidate}
         />
       </Field>
+
+      <div className="border-t border-lab-border pt-3 space-y-3">
+        <div className="flex items-center justify-between">
+          <label className="text-xs text-lab-dim flex items-center gap-2">
+            <input
+              type="checkbox"
+              checked={hp.crossValidate}
+              onChange={(e) => set("crossValidate", e.target.checked)}
+              className="accent-accent"
+            />
+            k-fold cross-validation
+          </label>
+        </div>
+        <p className="text-[11px] text-lab-dim -mt-2">
+          Trains {hp.folds} models on different held-out slices and averages the result —
+          slower, but a far more reliable number on a small dataset than one random split.
+        </p>
+        {hp.crossValidate && (
+          <Field label="Folds" value={hp.folds}>
+            <input
+              type="range"
+              min={3}
+              max={10}
+              step={1}
+              value={hp.folds}
+              onChange={(e) => set("folds", Number(e.target.value))}
+              className="w-full accent-accent"
+            />
+          </Field>
+        )}
+      </div>
+
+      <div className="border-t border-lab-border pt-3 space-y-1">
+        <div className="flex justify-between items-center text-xs text-lab-dim">
+          <span>Random seed</span>
+          <button
+            onClick={() => set("seed", Math.floor(Math.random() * 100000))}
+            className="text-[11px] px-2 py-0.5 rounded bg-lab-panel2 border border-lab-border hover:border-accent transition-colors"
+          >
+            Randomize
+          </button>
+        </div>
+        <input
+          type="number"
+          value={hp.seed}
+          onChange={(e) => set("seed", Number(e.target.value))}
+          className="w-full bg-lab-bg border border-lab-border rounded-md px-2 py-1.5 text-xs font-mono focus:outline-none focus:border-accent"
+        />
+        <p className="text-[11px] text-lab-dim">
+          Same seed + same data + same settings = same result every time. Change it to see how
+          much a run varies by chance; keep it fixed to fairly compare model types.
+        </p>
+      </div>
     </div>
   );
 }

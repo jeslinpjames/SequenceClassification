@@ -50,6 +50,9 @@ export default function TrainingDashboard({
   confusionMatrix,
   classNames,
   isTraining,
+  crossValidated,
+  cvFoldAccuracies,
+  cvStd,
 }: {
   history: EpochLog[];
   totalEpochs: number;
@@ -57,6 +60,9 @@ export default function TrainingDashboard({
   confusionMatrix: number[][];
   classNames: string[];
   isTraining: boolean;
+  crossValidated?: boolean;
+  cvFoldAccuracies?: number[] | null;
+  cvStd?: number | null;
 }) {
   const progress = totalEpochs > 0 ? history.length / totalEpochs : 0;
   const maxCell = confusionMatrix.length
@@ -122,10 +128,34 @@ export default function TrainingDashboard({
 
       {metrics && (
         <div className="grid grid-cols-4 gap-2">
-          <MetricCard label="Val accuracy" value={`${(metrics.accuracy * 100).toFixed(1)}%`} />
+          <MetricCard
+            label={crossValidated ? "Mean CV accuracy" : "Val accuracy"}
+            value={
+              crossValidated && cvStd != null
+                ? `${(metrics.accuracy * 100).toFixed(1)}% ± ${(cvStd * 100).toFixed(1)}%`
+                : `${(metrics.accuracy * 100).toFixed(1)}%`
+            }
+          />
           <MetricCard label="Precision" value={metrics.precision.toFixed(2)} />
           <MetricCard label="Recall" value={metrics.recall.toFixed(2)} />
           <MetricCard label="F1" value={metrics.f1.toFixed(2)} />
+        </div>
+      )}
+
+      {crossValidated && cvFoldAccuracies && cvFoldAccuracies.length > 0 && (
+        <div className="space-y-1">
+          <div className="text-xs text-lab-dim">Accuracy per fold</div>
+          <div className="flex gap-1">
+            {cvFoldAccuracies.map((a, i) => (
+              <div
+                key={i}
+                className="flex-1 bg-lab-panel2 border border-lab-border rounded px-1 py-1 text-center"
+              >
+                <div className="text-[10px] text-lab-dim">f{i + 1}</div>
+                <div className="text-xs font-mono">{(a * 100).toFixed(0)}%</div>
+              </div>
+            ))}
+          </div>
         </div>
       )}
 

@@ -41,6 +41,9 @@ export default function Home() {
   const [metrics, setMetrics] = useState<Metrics | null>(null);
   const [confusionMatrix, setConfusionMatrix] = useState<number[][]>([]);
   const [trainClassNames, setTrainClassNames] = useState<string[]>([]);
+  const [crossValidated, setCrossValidated] = useState(false);
+  const [cvFoldAccuracies, setCvFoldAccuracies] = useState<number[] | null>(null);
+  const [cvStd, setCvStd] = useState<number | null>(null);
   const [trainError, setTrainError] = useState<string | null>(null);
   const [warnings, setWarnings] = useState<string[]>([]);
   const [model, setModel] = useState<tf.LayersModel | null>(null);
@@ -55,6 +58,8 @@ export default function Home() {
     setConfusionMatrix([]);
     setHistory([]);
     setModel(null);
+    setCvFoldAccuracies(null);
+    setCvStd(null);
 
     if (totalExamples < 10) {
       setTrainError("Add at least 10 example sequences in total across your classes.");
@@ -106,6 +111,9 @@ export default function Home() {
           setMetrics(data.metrics);
           setConfusionMatrix(data.confusionMatrix);
           setTrainClassNames(data.classNames);
+          setCrossValidated(data.crossValidated);
+          setCvFoldAccuracies(data.cvFoldAccuracies);
+          setCvStd(data.cvStd);
           setIsTraining(false);
           loadModel(data.model, data.dataset.maxLen, data.alphabet);
         }
@@ -215,6 +223,9 @@ export default function Home() {
             confusionMatrix={confusionMatrix}
             classNames={trainClassNames}
             isTraining={isTraining}
+            crossValidated={crossValidated}
+            cvFoldAccuracies={cvFoldAccuracies}
+            cvStd={cvStd}
           />
         </section>
 

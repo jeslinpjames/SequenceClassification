@@ -11,6 +11,9 @@ export interface HyperParams {
   batchSize: number;
   epochs: number;
   valSplit: number;
+  seed: number;
+  crossValidate: boolean;
+  folds: number;
 }
 
 export const DEFAULT_HYPERPARAMS: HyperParams = {
@@ -22,14 +25,21 @@ export const DEFAULT_HYPERPARAMS: HyperParams = {
   batchSize: 8,
   epochs: 30,
   valSplit: 0.2,
+  seed: 42,
+  crossValidate: false,
+  folds: 5,
 };
 
 function makeRecurrentLayer(
   type: ModelType,
   units: number,
-  returnSequences: boolean
+  returnSequences: boolean,
+  seed: number
 ): tf.layers.Layer {
-  const common = { units, returnSequences, dropout: 0 } as const;
+  const kernelInitializer = tf.initializers.glorotUniform({ seed });
+  const recurrentInitializer = tf.initializers.orthogonal({ seed: seed + 1 });
+  const common = { units, returnSequences, dropout: 0, kernelInitializer, recurrentInitializer } as const;
+
   switch (type) {
     case "rnn":
       return tf.layers.simpleRNN(common);
@@ -39,7 +49,7 @@ function makeRecurrentLayer(
       return tf.layers.gru(common);
     case "bilstm":
       return tf.layers.bidirectional({
-        layer: tf.layers.lstm({ units, returnSequences }) as tf.layers.RNN,
+        layer: tf.layers.lstm({ units, returnSequences, kernelInitializer, recurrentInitializer }) as tf.layers.RNN,
         mergeMode: "concat",
       });
     default:
@@ -51,8 +61,9 @@ function makeRecurrentLayer(
  * Builds a small sequential recurrent classifier:
  * Input [seqLen, vocabSize] -> (recurrent layer(s) + dropout) -> Dense(numClasses, softmax)
  *
- * Uses softmax + sparseCategoricalCrossentropy uniformly for 2-or-more classes, so binary
- * and multi-class (Teachable-Machine-style "any number of classes") share one code path.
+ * Every weight-bearing layer gets a seeded initializer, derived from hp.seed, so the same
+ * seed always produces the same starting weights — needed to fairly compare architectures
+ * instead of confounding "which model is better" with "which model got luckier init."
  */
 export function buildModel(
   seqLen: number,
@@ -64,18 +75,31 @@ export function buildModel(
 
   for (let layerIdx = 0; layerIdx < hp.numLayers; layerIdx++) {
     const isLast = layerIdx === hp.numLayers - 1;
-    const layer = makeRecurrentLayer(hp.modelType, hp.hiddenUnits, !isLast);
+    const layerSeed = hp.seed + layerIdx * 10;
+    const layer = makeRecurrentLayer(hp.modelType, hp.hiddenUnits, !isLast, layerSeed);
     if (layerIdx === 0) {
       model.add(tf.layers.inputLayer({ inputShape: [seqLen, vocabSize] }));
     }
     model.add(layer);
     if (hp.dropout > 0) {
-      model.add(tf.layers.dropout({ rate: hp.dropout }));
+      model.add(tf.layers.dropout({ rate: hp.dropout, seed: hp.seed + 999 }));
     }
   }
 
-  model.add(tf.layers.dense({ units: 8, activation: "relu" }));
-  model.add(tf.layers.dense({ units: numClasses, activation: "softmax" }));
+  model.add(
+    tf.layers.dense({
+      units: 8,
+      activation: "relu",
+      kernelInitializer: tf.initializers.glorotUniform({ seed: hp.seed + 500 }),
+    })
+  );
+  model.add(
+    tf.layers.dense({
+      units: numClasses,
+      activation: "softmax",
+      kernelInitializer: tf.initializers.glorotUniform({ seed: hp.seed + 501 }),
+    })
+  );
 
   model.compile({
     optimizer: tf.train.adam(hp.learningRate),
